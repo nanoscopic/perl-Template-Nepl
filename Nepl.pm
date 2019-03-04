@@ -1,3 +1,7 @@
+# Copyright (C) 2017,2019 David Helkowski
+# Original code from https://github.com/nanoscopic/lumith_builder/blob/master/source_core/Templates.pm
+# License AGPL
+
 package Template::Nepl;
 
 use Digest::MD5 qw/md5_hex/;
