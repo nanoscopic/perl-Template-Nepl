@@ -8,7 +8,8 @@ use Digest::MD5 qw/md5_hex/;
 use Sub::Identify qw/sub_name/;
 use Scalar::Util qw/blessed/;
 use Data::Dumper;
-    
+use Parse::XJR;
+
 sub new {
     my $class = shift;
     my %params = @_;
@@ -22,7 +23,6 @@ sub init {
     $self->{'tags'} = {
         var => { sub => \&tpl_var, obj => $self },
         varq => { sub => \&tpl_varq, obj => $self },
-        dest => { sub => \&tpl_dest, obj => $self },
         code => { sub => \&tpl_code, obj => $self },
         dump => { sub => \&tpl_dump, obj => $self }
     };
@@ -30,20 +30,9 @@ sub init {
     $self->{'tpl_hash'} = {};
     $self->{'tpl_refs'} = {};
     $self->{'lang'} = 'perl';
-    $self->load_cached_templates();
     
     if( ! -e $tpl_pm_dir ) {
         mkdir $tpl_pm_dir;
-    }
-}
-
-sub tpl_dest {
-    my ( $self, $tag, $in, $out ) = @_;
-    my $lang = $self->{'lang'};
-    
-    my $pageName = $tag->{'page'};
-    if( $lang eq 'perl' ) {
-        return "  $out .= \$mod_urls->genDest( page => '$pageName' );\n";
     }
 }
 
@@ -66,7 +55,7 @@ sub tpl_var {
 }
 
 sub dump {
-    my ( $self, $ob ) = @_;
+    my $ob = shift;
     
     my $className = blessed( $ob );
     return $className if( $className );
@@ -84,37 +73,22 @@ sub tpl_dump {
     my $varName = $tag->{'name'};
     if( $lang eq 'perl' ) {
         if( $in eq '' || $tag->{'direct'} ) {
-            return "  $out .= \$mod_templates->dump( \$$varName );\n";
+            return "  $out .= Template::Nepl::dump( '$lang', \$$varName );\n";
         }
         else {
-            return "  $out .= \$mod_templates->dump( ${in}{'$varName'} );\n";
+            return "  $out .= Template::Nepl::dump( '$lang', ${in}{'$varName'} );\n";
         }
     }
 }
 
 sub escape {
-    my ( $self, $str ) = @_;
+    my $str = shift;
     
-    use Data::Dumper;
     my $dump = Dumper( $str );
     my $res = substr( $dump, 8, -2 );
     $res =~ s/\n/'."\\n".'/g; # hackily inline carriage returns so that the code looks less messy
     $res =~ s/\.''$//; # strip trailing addition of empty string because it is pointless ( caused by previous line )
     return $res;
-    #print "Input: $str\n";
-    #print "output: $res\n";
-}
-
-sub escapeForJS {
-    my ( $self, $str ) = @_;
-    
-    my $dump = Dumper( $str );
-    my $res = substr( $dump, 8, -2 );
-    $res =~ s/\n/'+"\\n"+'/g; # hackily inline carriage returns so that the code looks less messy
-    $res =~ s/\+''$//; # strip trailing addition of empty string because it is pointless ( caused by previous line )
-    return $res;
-    #print "Input: $str\n";
-    #print "output: $res\n";
 }
 
 sub tpl_varq {
@@ -130,7 +104,7 @@ sub tpl_varq {
         else {
             $valstr = "${in}{'$varName'}";
         }
-        return "  $out .= \$mod_templates->escape( $valstr );\n";
+        return "  $out .= Template::Nepl::escape( $valstr );\n";
     }
 }
 
@@ -158,142 +132,33 @@ sub run_tpl_tag {
     return $sub->( $obj, $node, $invar, $outvar );
 }
 
-sub load_cached_templates {
-    <var self="tpl_pm_dir" />
-    
-    return if( ! -e $tpl_pm_dir );
-    opendir( my $dh, $tpl_pm_dir );
-    my @files = readdir( $dh );
-    closedir( $dh );
-    
-    for my $file ( @files ) {
-        next if( $file =~ m/^\.+$/ );
-        $self->load_cached_template( "$tpl_pm_dir/$file", $file );
-    }
-}
-
-sub load_cached_template( path, file ) {
-    my ( $self, $path, $file ) = @_;
-    my $tpl_refs = $self->{'tpl_refs'};
-    my $lang     = $self->{'lang'};
-    <var self='tpl_refs' />
-    <var self='lang' />
-    
-    require $path;
-    if( $file =~ m/^tpl_(.+)_([A-Za-z0-9]+)$/ ) {
-        my $id = $1;
-        my $shortRef = $2;
-        # Todo: Scan the file for the package name it uses
-        my $ref = "TPL_${id}_$shortRef"->new();
-        $tpl_refs->{ $shortRef } = 1;
-        
-        my $info = $ref->info();
-        $info->{'ref'} = $ref;
-        $info->{'loaded'} = 1;
-        my $md5 = $info->{'md5'};
-        
-        my $tpls = $self->{'tpl_hash'};
-        my $tpl_set = $tpls->{$id};
-        if( !$tpl_set ) {
-            $tpl_set = $tpls->{$id} = { id => $id, lang => $lang };
-        }
-        
-        $tpl_set->{ $md5 } = $info;
-    }   
-}
-
 sub fetch_template {
     my $self = shift;
     my %params = ( @_ );
-    my $lang = $params{'lang'};
-    my $source = $params{'lang'}
-    my $id = $params{'id'};
+    my $lang   = $params{'lang'};
+    my $source = $params{'source'}
     
     my $tpls = $self->{'tpl_hash'};
-    my $tpl_set = $tpls->{$id};
-    if( !$tpl_set ) {
-        $tpl_set = $tpls->{$id} = { id => $id, lang => $lang };
-    }
     
-    my $md5 = md5_hex( $source );
-    
-    my $tpl = $tpl_set->{$md5};
-    if( !$tpl ) {
-        my $shortRef = $self->new_shortRef( $md5 );
-        my $file;
-        if( $lang eq 'perl' ) {
-            $file = "tpl_${id}_$shortRef.pm";
-        }
-        $tpl = $tpl_set->{$md5} = {
-            file => $file,
-            loaded => 0,
-            ref => 0,
-            generated => time(),
-            shortRef => $shortRef,
-            id => $id,
-            md5 => $md5
-        };
+    my $tpl;
+    if( defined $params{'id'} ) {
+        my $id  = $params{'id'};
+        my $tpl = $tpls->{$id};
+        return $tpl if( $tpl );
+        $tpl = $tpls->{$id} = { id => $id, lang => $lang, shortRef => $id };
     }
     else {
-        return $tpl;
+        my $md5 = md5_hex( $source );
+        $tpl = $tpl_set->{$md5};
+        return $tpl if( $tpl );
+        my $shortRef = $self->new_shortRef( $md5 );
+        $tpl = $tpls->{$md5} = { id => $md5, lang => $lang, shortRef => $shortRef };
     }
-    
-    if( $tpl->{'ref'} ) { # template is already loaded in memory ( for perl at least )
-        return $tpl;
-    }
-    
-    # template is not yet loaded
-    
-    # create the template pm file if needed
-    my $filename = $tpl->{'file'};
-    my $file = $self->{'tpl_pm_dir'} . '/' . $filename;
-    my $shortRef = $tpl->{'shortRef'};
-    #if( ! -e $file ) { 
-        # TODO: Alter out var for JS in next line
-        my $code;
-        if( $lang eq 'perl' ) {
-            $code = $self->template_to_code( $source, 0, 0, '$out', '$invar->' );
-        }
         
-        my $flatinfo = { %$tpl };
-        delete $flatinfo->{'ref'};
-        delete $flatinfo->{'loaded'};
-        my $flatText;
-        if( $lang eq 'perl' ) {
-            $flatText = XML::Bare::Object::xml( 0, $flatinfo );
-        }
-        
-        my $out;
-        if( $lang eq 'perl' ) {
-            $out = "\
-            package TPL_${id}_$shortRef;\
-            use XML::Bare;\
-            sub new {\
-                my \$class = shift;\
-                my \%params = \@_;\
-                my \$self = bless {}, \$class;\
-                return \$self;\
-            }\
-            sub info {\
-                my ( \$ob, \$xml ) = XML::Bare::simple( text => " . $self->escape( $flatText ) . " );\
-                return \$xml;\
-            }\
-            sub run {\
-                my ( \$self, \$invar ) = \@_;\
-                $code\
-                return \$out;\
-            }\
-            1;\
-            ";
-        }
-        write_file( $file, $out );
-    #}
-      
     if( $lang eq 'perl' ) {
-        require $file;
-        $tpl->{'ref'} = "TPL_${id}_$shortRef"->new();
+        $tpl->{'code'} = $self->template_to_code( $source, 0, 0, '$out', '$invar->' );
     }
-    
+      
     return $tpl;
 }
 
@@ -312,7 +177,7 @@ sub new_shortRef {
     return $md5;
 }
 
-sub template_to_code( text, append, ln, outvar, invar ) {
+sub template_to_code {
     my ( $self, $text, $append, $ln, $outvar, $invar ) = @_;
     my $lang = $self->{'lang'};
     
@@ -388,20 +253,22 @@ sub template_to_code( text, append, ln, outvar, invar ) {
         }
         if( $part =~ m/^\*</ ) {
             $part = substr( $part, 1 ); # strip off initial *
-            my ( $ob, $xml ) = XML::Bare->simple( text => $part );
+            my $root = Parse::XJR->new( text => $part );
             $part =~ s/\n/ -- /g; # strip carriage returns so xml can be shown on one line
             $part =~ s/]]>/ ]!]>/g;
             if( $lang eq 'perl' ) {
                 $out .= "  # XML: $part #\@$partLn\n";
             }
-            for my $key ( keys %$xml ) {
-                my $node = $xml->{ $key };
-                $out .= $self->run_tpl_tag( $key, $node, $invar, $outvar );
+            my $curNode = $root->firstChild();
+            while( $curNode ) {
+                my $key = $curNode->name();
+                $out .= $self->run_tpl_tag( $key, $curNode, $invar, $outvar );
+                $curNode = $curNode->next();
             }
         }
         else {
             if( $lang eq 'perl' ) {
-                $out .= "  $outvar .= " . $self->escape( $part ) .";\n";
+                $out .= "  $outvar .= " . Template::Nepl::escape( $part ) .";\n";
             }
         }
     }
