@@ -20,6 +20,7 @@ sub new {
 
 sub init {
     my $self = shift;
+    my %params = ( @_ );
     $self->{'tags'} = {
         var => { sub => \&tpl_var, obj => $self },
         varq => { sub => \&tpl_varq, obj => $self },
@@ -29,7 +30,8 @@ sub init {
     my $tpl_pm_dir = $self->{'tpl_pm_dir'} = "/tmp/tpl_pm";
     $self->{'tpl_hash'} = {};
     $self->{'tpl_refs'} = {};
-    $self->{'lang'} = 'perl';
+    $self->{'lang'} = $params{'lang'} || 'perl';
+    $self->{'pkg'} = $params{'pkg'} || '';
     
     if( ! -e $tpl_pm_dir ) {
         mkdir $tpl_pm_dir;
@@ -40,7 +42,7 @@ sub tpl_var {
     my ( $self, $tag, $in, $out ) = @_;
     my $lang = $self->{'lang'};
     
-    my $varName = $tag->{'name'};
+    my $varName = $tag->{'name'}->value();
     if( $lang eq 'perl' ) {
         if( $varName eq 'else' ) {
             return "\n} else {\n";
@@ -70,7 +72,7 @@ sub tpl_dump {
     my ( $self, $tag, $in, $out ) = @_;
     my $lang = $self->{'lang'};
     
-    my $varName = $tag->{'name'};
+    my $varName = $tag->{'name'}->value();
     if( $lang eq 'perl' ) {
         if( $in eq '' || $tag->{'direct'} ) {
             return "  $out .= Template::Nepl::dump( '$lang', \$$varName );\n";
@@ -95,7 +97,7 @@ sub tpl_varq {
     my ( $self, $tag, $in, $out ) = @_;
     my $lang = $self->{'lang'};
     
-    my $varName = $tag->{'name'};
+    my $varName = $tag->{'name'}->value();
     my $valstr;
     if( $lang eq 'perl' ) {
         if( $in eq '' ) {
@@ -112,11 +114,11 @@ sub tpl_code {
     my ( $self, $tag, $in, $out ) = @_;
     my $lang = $self->{'lang'};
     
-    my $data = $tag->{'data'};
+    my $data = $tag->{'data'}->value();
     if( $data =~ m/^\+/ ) {
         $data = substr( $data, 1 );
         if( $lang eq 'perl' ) {
-            return "  $out .= ($data);";
+            return "  $out .= eval {$data};";
         }
     }
     return "$data\n";
@@ -135,8 +137,8 @@ sub run_tpl_tag {
 sub fetch_template {
     my $self = shift;
     my %params = ( @_ );
-    my $lang   = $params{'lang'};
-    my $source = $params{'source'}
+    my $lang   = $self->{'lang'};
+    my $source = $params{'source'};
     
     my $tpls = $self->{'tpl_hash'};
     
@@ -207,13 +209,17 @@ sub template_to_code {
     #print Dumper( $text );
     #my $outvar = $self->{'outvar'};
         
-    my $out;
+    my $out = '';
+    if( $lang eq 'perl' && $self->{'pkg'} ) {
+        my $pkg = $self->{'pkg'};
+        $out .= "package $pkg;use strict;\n";
+    }
     if( $append ) {
-        $out = '';
+        #$out = '';
     }
     else {
         if( $lang eq 'perl' ) {
-            $out = "my $outvar = '';\n";
+            $out .= "my $outvar = '';\n";
         }
     }
     my $curLn = $ln;
@@ -276,7 +282,7 @@ sub template_to_code {
     if( $outvar eq 'return' ) {
         $out .= "return $outvar;\n";
     }
-    
+    $out .= "$outvar;";
     #print "As code: " . Dumper( $out );
     return $out;
 }
